@@ -1,0 +1,1453 @@
+// Quy ước: bảng snake_case số nhiều, id UUID, cột chuẩn created_at/updated_at/created_by/updated_by/deleted_at.
+// Thời gian lưu timestamptz (UTC). Tiền dùng Decimal — không dùng Float.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== TỔ CHỨC =====================
+
+/// Cơ sở bệnh viện (Hà Nội, Ninh Bình)
+model Campus {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      String    @unique @db.VarChar(20)
+  name      String    @db.VarChar(200)
+  address   String?   @db.VarChar(500)
+  phone     String?   @db.VarChar(50)
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  updatedBy String?   @map("updated_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  units       Unit[]
+  users       User[]
+  employees   Employee[]
+  assignments CampusAssignment[]
+  devices     AttendanceDevice[]
+
+  @@map("campuses")
+}
+
+enum UnitType {
+  KHOA
+  PHONG
+  TRUNG_TAM
+  VIEN
+  KHAC
+}
+
+/// Đơn vị: khoa, phòng, trung tâm, viện — dạng cây
+model Unit {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      String    @unique @db.VarChar(20)
+  name      String    @db.VarChar(200)
+  shortName String?   @map("short_name") @db.VarChar(50)
+  type      UnitType
+  parentId  String?   @map("parent_id") @db.Uuid
+  /// Cơ sở chính của đơn vị (null = hoạt động ở cả hai cơ sở)
+  campusId  String?   @map("campus_id") @db.Uuid
+  /// Ca mặc định của đơn vị (gợi ý khi xếp lịch)
+  defaultShiftId String? @map("default_shift_id") @db.Uuid
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy String?   @map("created_by") @db.Uuid
+  updatedBy String?   @map("updated_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  defaultShift Shift?                @relation("UnitDefaultShift", fields: [defaultShiftId], references: [id])
+  parent       Unit?                 @relation("UnitTree", fields: [parentId], references: [id])
+  children     Unit[]                @relation("UnitTree")
+  campus       Campus?               @relation(fields: [campusId], references: [id])
+  users        User[]
+  managedBy    UserManagedUnit[]
+  employees    Employee[]
+  assignments  CampusAssignment[]
+  historyFrom  EmployeeWorkHistory[] @relation("WorkHistoryFrom")
+  historyTo    EmployeeWorkHistory[] @relation("WorkHistoryTo")
+  timesheetPeriods TimesheetPeriod[]
+
+  @@index([parentId])
+  @@index([campusId])
+  @@map("units")
+}
+
+// ===================== HỆ THỐNG / PHÂN QUYỀN =====================
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+enum DataScope {
+  ALL
+  CAMPUS
+  UNIT
+  SELF
+}
+
+model User {
+  id                 String     @id @default(uuid()) @db.Uuid
+  username           String     @unique @db.VarChar(50)
+  passwordHash       String     @map("password_hash") @db.VarChar(255)
+  fullName           String     @map("full_name") @db.VarChar(200)
+  email              String?    @db.VarChar(200)
+  phone              String?    @db.VarChar(20)
+  /// Cơ sở gốc — dùng cho phạm vi dữ liệu CAMPUS
+  campusId           String?    @map("campus_id") @db.Uuid
+  /// Đơn vị của tài khoản — dùng cho phạm vi dữ liệu UNIT
+  unitId             String?    @map("unit_id") @db.Uuid
+  status             UserStatus @default(ACTIVE)
+  failedLoginCount   Int        @default(0) @map("failed_login_count")
+  lockedUntil        DateTime?  @map("locked_until") @db.Timestamptz(6)
+  mustChangePassword Boolean    @default(true) @map("must_change_password")
+  passwordChangedAt  DateTime?  @map("password_changed_at") @db.Timestamptz(6)
+  lastLoginAt        DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  /// Secret TOTP đã mã hóa (AES-256-GCM)
+  totpSecret         String?    @map("totp_secret") @db.VarChar(255)
+  totpEnabled        Boolean    @default(false) @map("totp_enabled")
+  /// Bước thời gian TOTP đã dùng gần nhất — chống dùng lại mã
+  totpLastCounter    Int?       @map("totp_last_counter")
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?    @map("created_by") @db.Uuid
+  updatedBy          String?    @map("updated_by") @db.Uuid
+  deletedAt          DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  campus       Campus?           @relation(fields: [campusId], references: [id])
+  unit         Unit?             @relation(fields: [unitId], references: [id])
+  roles        UserRole[]
+  permissions  UserPermission[]
+  managedUnits UserManagedUnit[]
+  sessions     Session[]
+  employee     Employee?
+  approvalAssignments ApprovalAssignee[]
+  notifications       Notification[]
+
+  @@index([campusId])
+  @@index([unitId])
+  @@map("users")
+}
+
+/// Nhóm tài khoản
+model Role {
+  id          String    @id @default(uuid()) @db.Uuid
+  code        String    @unique @db.VarChar(50)
+  name        String    @db.VarChar(200)
+  description String?   @db.VarChar(500)
+  dataScope   DataScope @default(SELF) @map("data_scope")
+  /// Nhóm hệ thống: không xóa được
+  isSystem    Boolean   @default(false) @map("is_system")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedBy   String?   @map("updated_by") @db.Uuid
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+/// Danh mục quyền — đồng bộ từ packages/shared/src/constants/permissions.ts
+model Permission {
+  code   String @id @db.VarChar(100)
+  module String @db.VarChar(50)
+  name   String @db.VarChar(200)
+
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId         String @map("role_id") @db.Uuid
+  permissionCode String @map("permission_code") @db.VarChar(100)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionCode], references: [code], onDelete: Cascade)
+
+  @@id([roleId, permissionCode])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+/// Quyền bổ sung riêng cho từng tài khoản (ngoài quyền của nhóm)
+model UserPermission {
+  userId         String @map("user_id") @db.Uuid
+  permissionCode String @map("permission_code") @db.VarChar(100)
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionCode], references: [code], onDelete: Cascade)
+
+  @@id([userId, permissionCode])
+  @@map("user_permissions")
+}
+
+/// Đơn vị tài khoản được quản lý (trưởng khoa phụ trách nhiều đơn vị)
+model UserManagedUnit {
+  userId String @map("user_id") @db.Uuid
+  unitId String @map("unit_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@id([userId, unitId])
+  @@map("user_managed_units")
+}
+
+/// Phiên đăng nhập; refresh token chỉ lưu hash SHA-256
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash") @db.VarChar(128)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  lastUsedAt       DateTime  @default(now()) @map("last_used_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  ip               String?   @db.VarChar(64)
+  userAgent        String?   @map("user_agent") @db.VarChar(500)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// Nhật ký thay đổi dữ liệu và sự kiện bảo mật
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?  @map("user_id") @db.Uuid
+  username  String?  @db.VarChar(100)
+  action    String   @db.VarChar(50)
+  entity    String   @db.VarChar(100)
+  entityId  String?  @map("entity_id") @db.VarChar(100)
+  before    Json?
+  after     Json?
+  ip        String?  @db.VarChar(64)
+  userAgent String?  @map("user_agent") @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ===================== DÙNG CHUNG =====================
+
+/// File đã tải lên. owner_type/owner_id xác định ai được tải về (kiểm tra qua FileAccessRegistry).
+model StoredFile {
+  id           String   @id @default(uuid()) @db.Uuid
+  originalName String   @map("original_name") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(100)
+  size         Int
+  /// Đường dẫn tương đối trong STORAGE_DIR
+  storageKey   String   @unique @map("storage_key") @db.VarChar(300)
+  sha256       String   @db.VarChar(64)
+  ownerType    String?  @map("owner_type") @db.VarChar(50)
+  ownerId      String?  @map("owner_id") @db.VarChar(100)
+  createdBy    String?  @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerType, ownerId])
+  @@map("files")
+}
+
+/// Danh mục dùng chung — loại danh mục khai báo tại packages/shared/src/constants/catalogs.ts
+model CatalogItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  type        String   @db.VarChar(50)
+  code        String   @db.VarChar(50)
+  name        String   @db.VarChar(300)
+  description String?  @db.VarChar(500)
+  meta        Json?
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?  @map("created_by") @db.Uuid
+  updatedBy   String?  @map("updated_by") @db.Uuid
+
+  @@unique([type, code])
+  @@index([type, sortOrder])
+  @@map("catalog_items")
+}
+
+/// Tham số chính sách theo ngày hiệu lực. Hết hiệu lực = ngày trước phiên bản kế tiếp.
+model PolicyParameter {
+  id            String   @id @default(uuid()) @db.Uuid
+  code          String   @db.VarChar(50)
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  value         Decimal  @db.Decimal(18, 4)
+  /// Căn cứ văn bản pháp lý
+  legalBasis    String?  @map("legal_basis") @db.VarChar(500)
+  note          String?  @db.VarChar(1000)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?  @map("created_by") @db.Uuid
+
+  @@unique([code, effectiveFrom])
+  @@map("policy_parameters")
+}
+
+// ===================== QUY TRÌNH DUYỆT =====================
+
+enum ApproverType {
+  SELECTED
+  UNIT_MANAGER
+  ROLE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model ApprovalWorkflow {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(200)
+  targetType  String   @map("target_type") @db.VarChar(50)
+  description String?  @db.VarChar(500)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?  @map("created_by") @db.Uuid
+  updatedBy   String?  @map("updated_by") @db.Uuid
+
+  steps    ApprovalStep[]
+  requests ApprovalRequest[]
+
+  @@map("approval_workflows")
+}
+
+model ApprovalStep {
+  id           String       @id @default(uuid()) @db.Uuid
+  workflowId   String       @map("workflow_id") @db.Uuid
+  stepOrder    Int          @map("step_order")
+  name         String       @db.VarChar(200)
+  approverType ApproverType @map("approver_type")
+  roleId       String?      @map("role_id") @db.Uuid
+
+  workflow ApprovalWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, stepOrder])
+  @@map("approval_steps")
+}
+
+model ApprovalRequest {
+  id            String         @id @default(uuid()) @db.Uuid
+  workflowId    String         @map("workflow_id") @db.Uuid
+  targetType    String         @map("target_type") @db.VarChar(50)
+  targetId      String         @map("target_id") @db.VarChar(100)
+  title         String         @db.VarChar(300)
+  content       String?
+  status        ApprovalStatus @default(PENDING)
+  currentStep   Int            @map("current_step")
+  /// Ảnh chụp các bước tại thời điểm gửi — sửa quy trình không ảnh hưởng phiếu đang chạy
+  stepsSnapshot Json           @map("steps_snapshot")
+  unitId        String?        @map("unit_id") @db.Uuid
+  campusId      String?        @map("campus_id") @db.Uuid
+  requestedBy   String         @map("requested_by") @db.Uuid
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  completedAt   DateTime?      @map("completed_at") @db.Timestamptz(6)
+
+  workflow  ApprovalWorkflow   @relation(fields: [workflowId], references: [id])
+  assignees ApprovalAssignee[]
+  actions   ApprovalAction[]
+
+  @@index([targetType, targetId])
+  @@index([status])
+  @@index([requestedBy])
+  @@map("approval_requests")
+}
+
+/// Người duyệt của từng bước (xác định khi bước được kích hoạt, hoặc khi gửi với bước SELECTED)
+model ApprovalAssignee {
+  requestId String @map("request_id") @db.Uuid
+  stepOrder Int    @map("step_order")
+  userId    String @map("user_id") @db.Uuid
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([requestId, stepOrder, userId])
+  @@index([userId])
+  @@map("approval_assignees")
+}
+
+model ApprovalAction {
+  id        BigInt   @id @default(autoincrement())
+  requestId String   @map("request_id") @db.Uuid
+  stepOrder Int      @map("step_order")
+  actorId   String   @map("actor_id") @db.Uuid
+  actorName String   @map("actor_name") @db.VarChar(200)
+  /// SUBMIT | APPROVE | REJECT | CANCEL
+  action    String   @db.VarChar(20)
+  comment   String?  @db.VarChar(1000)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([actorId])
+  @@map("approval_actions")
+}
+
+// ===================== NHÂN SỰ =====================
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum EmployeeStatus {
+  WORKING
+  PROBATION
+  LONG_LEAVE
+  RESIGNED
+  RETIRED
+}
+
+enum SalaryForm {
+  COEFFICIENT
+  FIXED
+}
+
+enum RecordSource {
+  LOCAL
+  FAST
+}
+
+/// Hồ sơ nhân viên. Trường *_enc mã hóa AES-256-GCM; id_number_hash là blind index để tra cứu/chống trùng.
+/// Các trường *_code tham chiếu catalog_items theo mã.
+model Employee {
+  id                 String         @id @default(uuid()) @db.Uuid
+  code               String         @unique @db.VarChar(30)
+  fullName           String         @map("full_name") @db.VarChar(200)
+  /// Chuỗi không dấu để tìm kiếm: mã + họ tên + điện thoại + email
+  searchText         String         @default("") @map("search_text") @db.VarChar(600)
+  gender             Gender
+  dateOfBirth        DateTime?      @map("date_of_birth") @db.Date
+  placeOfBirth       String?        @map("place_of_birth") @db.VarChar(300)
+  hometown           String?        @db.VarChar(300)
+  nationality        String?        @db.VarChar(100)
+  ethnicityCode      String?        @map("ethnicity_code") @db.VarChar(50)
+  religionCode       String?        @map("religion_code") @db.VarChar(50)
+  idNumberEnc        String?        @map("id_number_enc") @db.VarChar(255)
+  idNumberHash       String?        @unique @map("id_number_hash") @db.VarChar(64)
+  idIssueDate        DateTime?      @map("id_issue_date") @db.Date
+  idIssuePlace       String?        @map("id_issue_place") @db.VarChar(200)
+  taxCodeEnc         String?        @map("tax_code_enc") @db.VarChar(255)
+  socialInsuranceNo  String?        @map("social_insurance_no") @db.VarChar(20)
+  healthInsuranceNo  String?        @map("health_insurance_no") @db.VarChar(20)
+  bankAccountEnc     String?        @map("bank_account_enc") @db.VarChar(255)
+  bankCode           String?        @map("bank_code") @db.VarChar(50)
+  bankBranch         String?        @map("bank_branch") @db.VarChar(200)
+  phone              String?        @db.VarChar(20)
+  email              String?        @db.VarChar(200)
+  permanentAddress   String?        @map("permanent_address") @db.VarChar(500)
+  currentAddress     String?        @map("current_address") @db.VarChar(500)
+  maritalStatus      String?        @map("marital_status") @db.VarChar(20)
+  photoFileId        String?        @map("photo_file_id") @db.Uuid
+  /// Cơ sở gốc
+  campusId           String         @map("campus_id") @db.Uuid
+  unitId             String         @map("unit_id") @db.Uuid
+  positionCode       String?        @map("position_code") @db.VarChar(50)
+  jobTitleCode       String?        @map("job_title_code") @db.VarChar(50)
+  contractTypeCode   String?        @map("contract_type_code") @db.VarChar(50)
+  educationLevelCode String?        @map("education_level_code") @db.VarChar(50)
+  academicTitleCode  String?        @map("academic_title_code") @db.VarChar(50)
+  specialty          String?        @db.VarChar(200)
+  /// Mã chấm công (employeeNo trên máy Face ID)
+  attendanceCode     String?        @unique @map("attendance_code") @db.VarChar(50)
+  /// Ngày vào làm việc tại bệnh viện
+  startDate          DateTime?      @map("start_date") @db.Date
+  recruitmentDate    DateTime?      @map("recruitment_date") @db.Date
+  partyJoinDate      DateTime?      @map("party_join_date") @db.Date
+  status             EmployeeStatus @default(WORKING)
+  leaveDate          DateTime?      @map("leave_date") @db.Date
+  leaveReason        String?        @map("leave_reason") @db.VarChar(500)
+  /// Tài khoản đăng nhập của nhân viên (phạm vi SELF)
+  userId             String?        @unique @map("user_id") @db.Uuid
+  source             RecordSource   @default(LOCAL)
+  externalId         String?        @map("external_id") @db.VarChar(100)
+  note               String?        @db.VarChar(2000)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?        @map("created_by") @db.Uuid
+  updatedBy          String?        @map("updated_by") @db.Uuid
+  deletedAt          DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  campus             Campus                      @relation(fields: [campusId], references: [id])
+  unit               Unit                        @relation(fields: [unitId], references: [id])
+  user               User?                       @relation(fields: [userId], references: [id])
+  family             EmployeeFamilyMember[]
+  workHistory        EmployeeWorkHistory[]
+  contracts          EmployeeContract[]
+  assignments        CampusAssignment[]
+  documents          EmployeeDocument[]
+  trainings          EmployeeTraining[]
+  rewards            EmployeeReward[]
+  disciplines        EmployeeDiscipline[]
+  salaries           EmployeeSalary[]
+  allowances         EmployeeAllowance[]
+  incomeCoefficients EmployeeIncomeCoefficient[]
+  punches            AttendancePunch[]
+  schedules          Schedule[]
+  leaveRequests      LeaveRequest[]
+  leaveBalances      LeaveBalance[]
+  dailyTimesheets    DailyTimesheet[]
+  monthlyTimesheets  MonthlyTimesheet[]
+  payrollItems       PayrollItem[]
+  salaryRaises       SalaryRaise[]
+  retroPays          RetroPay[]
+  extraIncomeLines   ExtraIncomeLine[]
+
+  @@unique([source, externalId])
+  @@index([campusId])
+  @@index([unitId])
+  @@index([status])
+  @@index([searchText])
+  @@map("employees")
+}
+
+model EmployeeFamilyMember {
+  id               String    @id @default(uuid()) @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  relationshipCode String    @map("relationship_code") @db.VarChar(50)
+  fullName         String    @map("full_name") @db.VarChar(200)
+  birthYear        Int?      @map("birth_year")
+  occupation       String?   @db.VarChar(200)
+  workplace        String?   @db.VarChar(300)
+  phone            String?   @db.VarChar(20)
+  /// Người phụ thuộc giảm trừ thuế TNCN
+  isDependant      Boolean   @default(false) @map("is_dependant")
+  dependantTaxCode String?   @map("dependant_tax_code") @db.VarChar(20)
+  deductionFrom    DateTime? @map("deduction_from") @db.Date
+  deductionTo      DateTime? @map("deduction_to") @db.Date
+  note             String?   @db.VarChar(1000)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@map("employee_family_members")
+}
+
+model EmployeeWorkHistory {
+  id            String    @id @default(uuid()) @db.Uuid
+  employeeId    String    @map("employee_id") @db.Uuid
+  eventTypeCode String    @map("event_type_code") @db.VarChar(50)
+  decisionNo    String?   @map("decision_no") @db.VarChar(100)
+  decisionDate  DateTime? @map("decision_date") @db.Date
+  effectiveDate DateTime  @map("effective_date") @db.Date
+  fromUnitId    String?   @map("from_unit_id") @db.Uuid
+  toUnitId      String?   @map("to_unit_id") @db.Uuid
+  positionCode  String?   @map("position_code") @db.VarChar(50)
+  jobTitleCode  String?   @map("job_title_code") @db.VarChar(50)
+  content       String?   @db.VarChar(2000)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+  updatedBy     String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  fromUnit Unit?    @relation("WorkHistoryFrom", fields: [fromUnitId], references: [id])
+  toUnit   Unit?    @relation("WorkHistoryTo", fields: [toUnitId], references: [id])
+
+  @@index([employeeId, effectiveDate])
+  @@map("employee_work_history")
+}
+
+model EmployeeContract {
+  id               String     @id @default(uuid()) @db.Uuid
+  employeeId       String     @map("employee_id") @db.Uuid
+  contractNo       String?    @map("contract_no") @db.VarChar(100)
+  contractTypeCode String     @map("contract_type_code") @db.VarChar(50)
+  signDate         DateTime?  @map("sign_date") @db.Date
+  startDate        DateTime   @map("start_date") @db.Date
+  endDate          DateTime?  @map("end_date") @db.Date
+  salaryForm       SalaryForm @default(COEFFICIENT) @map("salary_form")
+  fileId           String?    @map("file_id") @db.Uuid
+  note             String?    @db.VarChar(1000)
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?    @map("created_by") @db.Uuid
+  updatedBy        String?    @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, startDate])
+  @@index([endDate])
+  @@map("employee_contracts")
+}
+
+/// Phân công làm việc tại cơ sở khác cơ sở gốc, theo khoảng ngày (không chồng lấn với nhau)
+model CampusAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  campusId   String   @map("campus_id") @db.Uuid
+  unitId     String?  @map("unit_id") @db.Uuid
+  fromDate   DateTime @map("from_date") @db.Date
+  toDate     DateTime @map("to_date") @db.Date
+  decisionNo String?  @map("decision_no") @db.VarChar(100)
+  note       String?  @db.VarChar(1000)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+  updatedBy  String?  @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  campus   Campus   @relation(fields: [campusId], references: [id])
+  unit     Unit?    @relation(fields: [unitId], references: [id])
+
+  @@index([employeeId, fromDate])
+  @@index([campusId, fromDate, toDate])
+  @@map("campus_assignments")
+}
+
+model EmployeeDocument {
+  id           String   @id @default(uuid()) @db.Uuid
+  employeeId   String   @map("employee_id") @db.Uuid
+  fileId       String   @map("file_id") @db.Uuid
+  categoryCode String   @map("category_code") @db.VarChar(50)
+  name         String   @db.VarChar(300)
+  note         String?  @db.VarChar(1000)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy    String?  @map("created_by") @db.Uuid
+  updatedBy    String?  @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@map("employee_documents")
+}
+
+model EmployeeTraining {
+  id               String    @id @default(uuid()) @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  trainingTypeCode String    @map("training_type_code") @db.VarChar(50)
+  name             String    @db.VarChar(300)
+  institution      String?   @db.VarChar(300)
+  major            String?   @db.VarChar(200)
+  fromDate         DateTime? @map("from_date") @db.Date
+  toDate           DateTime? @map("to_date") @db.Date
+  certificateNo    String?   @map("certificate_no") @db.VarChar(100)
+  issueDate        DateTime? @map("issue_date") @db.Date
+  expiryDate       DateTime? @map("expiry_date") @db.Date
+  /// Số giờ / tiết (đào tạo liên tục CME)
+  hours            Decimal?  @db.Decimal(8, 2)
+  result           String?   @db.VarChar(200)
+  fileId           String?   @map("file_id") @db.Uuid
+  note             String?   @db.VarChar(1000)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([expiryDate])
+  @@map("employee_trainings")
+}
+
+model EmployeeReward {
+  id           String    @id @default(uuid()) @db.Uuid
+  employeeId   String    @map("employee_id") @db.Uuid
+  formCode     String    @map("form_code") @db.VarChar(50)
+  levelCode    String?   @map("level_code") @db.VarChar(50)
+  year         Int
+  decisionNo   String?   @map("decision_no") @db.VarChar(100)
+  decisionDate DateTime? @map("decision_date") @db.Date
+  content      String?   @db.VarChar(2000)
+  amount       Decimal?  @db.Decimal(18, 2)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy    String?   @map("created_by") @db.Uuid
+  updatedBy    String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([year])
+  @@map("employee_rewards")
+}
+
+model EmployeeDiscipline {
+  id               String    @id @default(uuid()) @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  formCode         String    @map("form_code") @db.VarChar(50)
+  decisionNo       String?   @map("decision_no") @db.VarChar(100)
+  decisionDate     DateTime? @map("decision_date") @db.Date
+  effectiveFrom    DateTime  @map("effective_from") @db.Date
+  effectiveTo      DateTime? @map("effective_to") @db.Date
+  reason           String?   @db.VarChar(2000)
+  /// Số tháng kéo dài thời hạn nâng lương do kỷ luật
+  delayRaiseMonths Int       @default(0) @map("delay_raise_months")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@map("employee_disciplines")
+}
+
+/// Diễn biến lương theo ngày hiệu lực (lương hệ số hoặc khoán)
+model EmployeeSalary {
+  id                 String     @id @default(uuid()) @db.Uuid
+  employeeId         String     @map("employee_id") @db.Uuid
+  effectiveFrom      DateTime   @map("effective_from") @db.Date
+  salaryForm         SalaryForm @map("salary_form")
+  /// Mã ngạch / chức danh nghề nghiệp (JOB_TITLE)
+  scaleCode          String?    @map("scale_code") @db.VarChar(50)
+  step               Int?
+  coefficient        Decimal?   @db.Decimal(6, 3)
+  /// % phụ cấp thâm niên vượt khung
+  beyondScalePercent Decimal?   @map("beyond_scale_percent") @db.Decimal(5, 2)
+  fixedAmount        Decimal?   @map("fixed_amount") @db.Decimal(18, 2)
+  /// Mốc xét nâng lương lần sau
+  nextRaiseDate      DateTime?  @map("next_raise_date") @db.Date
+  decisionNo         String?    @map("decision_no") @db.VarChar(100)
+  decisionDate       DateTime?  @map("decision_date") @db.Date
+  note               String?    @db.VarChar(1000)
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?    @map("created_by") @db.Uuid
+  updatedBy          String?    @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, effectiveFrom])
+  @@index([nextRaiseDate])
+  @@map("employee_salaries")
+}
+
+model EmployeeAllowance {
+  id                String    @id @default(uuid()) @db.Uuid
+  employeeId        String    @map("employee_id") @db.Uuid
+  allowanceTypeCode String    @map("allowance_type_code") @db.VarChar(50)
+  /// Hệ số / % / số tiền — theo cách tính của loại phụ cấp
+  value             Decimal   @db.Decimal(18, 4)
+  effectiveFrom     DateTime  @map("effective_from") @db.Date
+  effectiveTo       DateTime? @map("effective_to") @db.Date
+  decisionNo        String?   @map("decision_no") @db.VarChar(100)
+  note              String?   @db.VarChar(1000)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         String?   @map("created_by") @db.Uuid
+  updatedBy         String?   @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, effectiveFrom])
+  @@map("employee_allowances")
+}
+
+/// Hệ số ổn định thu nhập, hệ số quản lý, hệ số khác theo ngày hiệu lực
+model EmployeeIncomeCoefficient {
+  id                String   @id @default(uuid()) @db.Uuid
+  employeeId        String   @map("employee_id") @db.Uuid
+  effectiveFrom     DateTime @map("effective_from") @db.Date
+  stabilizationCoef Decimal  @default(0) @map("stabilization_coef") @db.Decimal(6, 3)
+  managementCoef    Decimal  @default(0) @map("management_coef") @db.Decimal(6, 3)
+  otherCoef         Decimal  @default(0) @map("other_coef") @db.Decimal(6, 3)
+  note              String?  @db.VarChar(1000)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         String?  @map("created_by") @db.Uuid
+  updatedBy         String?  @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, effectiveFrom])
+  @@map("employee_income_coefficients")
+}
+
+// ===================== TÍCH HỢP =====================
+
+/// Nguồn chuẩn của từng loại dữ liệu: FAST (đồng bộ về, chỉ đọc) hay LOCAL (hệ thống mới quản lý)
+model IntegrationOwnership {
+  entity    String       @id @db.VarChar(50)
+  source    RecordSource @default(FAST)
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?      @map("updated_by") @db.Uuid
+
+  @@map("integration_ownership")
+}
+
+model IntegrationSyncLog {
+  id          String    @id @default(uuid()) @db.Uuid
+  integration String    @db.VarChar(30)
+  entity      String    @db.VarChar(50)
+  /// SCHEDULED | MANUAL
+  trigger     String    @db.VarChar(20)
+  /// RUNNING | SUCCESS | FAILED
+  status      String    @db.VarChar(20)
+  created     Int       @default(0)
+  updated     Int       @default(0)
+  skipped     Int       @default(0)
+  failed      Int       @default(0)
+  message     String?   @db.VarChar(2000)
+  details     Json?
+  triggeredBy String?   @map("triggered_by") @db.Uuid
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  @@index([integration, startedAt])
+  @@map("integration_sync_logs")
+}
+
+// ===================== CHẤM CÔNG =====================
+
+enum ShiftType {
+  WORK
+  DUTY
+}
+
+/// Ca làm việc / ca trực. Giờ theo giờ Việt Nam "HH:mm"; endTime ≤ startTime = ca qua đêm.
+model Shift {
+  id                   String    @id @default(uuid()) @db.Uuid
+  code                 String    @unique @db.VarChar(20)
+  name                 String    @db.VarChar(200)
+  type                 ShiftType
+  startTime            String    @map("start_time") @db.VarChar(5)
+  endTime              String    @map("end_time") @db.VarChar(5)
+  breakMinutes         Int       @default(0) @map("break_minutes")
+  lateGraceMinutes     Int       @default(5) @map("late_grace_minutes")
+  earlyGraceMinutes    Int       @default(5) @map("early_grace_minutes")
+  checkInBeforeMinutes Int       @default(120) @map("check_in_before_minutes")
+  checkOutAfterMinutes Int       @default(240) @map("check_out_after_minutes")
+  /// Số công quy đổi
+  workUnits            Decimal   @default(1) @map("work_units") @db.Decimal(4, 2)
+  color                String?   @db.VarChar(20)
+  /// null = dùng cho cả hai cơ sở
+  campusId             String?   @map("campus_id") @db.Uuid
+  sortOrder            Int       @default(0) @map("sort_order")
+  isActive             Boolean   @default(true) @map("is_active")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?   @map("created_by") @db.Uuid
+  updatedBy            String?   @map("updated_by") @db.Uuid
+
+  schedules     Schedule[]
+  dutyRates     DutyPayRate[]
+  defaultUnits  Unit[]           @relation("UnitDefaultShift")
+  timesheetRows DailyTimesheet[]
+
+  @@map("shifts")
+}
+
+/// Mức tiền trực theo ca trực, có ngày hiệu lực
+model DutyPayRate {
+  id            String   @id @default(uuid()) @db.Uuid
+  shiftId       String   @map("shift_id") @db.Uuid
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  amount        Decimal  @db.Decimal(18, 2)
+  legalBasis    String?  @map("legal_basis") @db.VarChar(500)
+  note          String?  @db.VarChar(1000)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?  @map("created_by") @db.Uuid
+
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, effectiveFrom])
+  @@map("duty_pay_rates")
+}
+
+model Holiday {
+  id        String   @id @default(uuid()) @db.Uuid
+  date      DateTime @unique @db.Date
+  name      String   @db.VarChar(200)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by") @db.Uuid
+
+  @@map("holidays")
+}
+
+/// Máy chấm công Face ID (Hikvision ISAPI). Watermark: last_event_time + last_serial_no.
+model AttendanceDevice {
+  id                 String    @id @default(uuid()) @db.Uuid
+  code               String    @unique @db.VarChar(20)
+  name               String    @db.VarChar(200)
+  campusId           String    @map("campus_id") @db.Uuid
+  location           String?   @db.VarChar(300)
+  host               String    @db.VarChar(200)
+  port               Int       @default(80)
+  useHttps           Boolean   @default(false) @map("use_https")
+  username           String    @db.VarChar(100)
+  /// Mật khẩu máy đã mã hóa (AES-256-GCM)
+  passwordEnc        String    @map("password_enc") @db.VarChar(500)
+  eventMinors        String    @default("75") @map("event_minors") @db.VarChar(100)
+  model              String?   @db.VarChar(100)
+  serialNumber       String?   @map("serial_number") @db.VarChar(100)
+  firmware           String?   @db.VarChar(100)
+  isActive           Boolean   @default(true) @map("is_active")
+  lastEventTime      DateTime? @map("last_event_time") @db.Timestamptz(6)
+  lastSerialNo       Int?      @map("last_serial_no")
+  lastSyncAt         DateTime? @map("last_sync_at") @db.Timestamptz(6)
+  lastSuccessAt      DateTime? @map("last_success_at") @db.Timestamptz(6)
+  lastSyncStatus     String?   @map("last_sync_status") @db.VarChar(20)
+  lastError          String?   @map("last_error") @db.VarChar(1000)
+  lastFetchedCount   Int?      @map("last_fetched_count")
+  /// Giờ máy − giờ máy chủ (giây)
+  clockOffsetSeconds Int?      @map("clock_offset_seconds")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?   @map("created_by") @db.Uuid
+  updatedBy          String?   @map("updated_by") @db.Uuid
+  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  campus  Campus            @relation(fields: [campusId], references: [id])
+  punches AttendancePunch[]
+
+  @@map("attendance_devices")
+}
+
+/// Dữ liệu quét gốc — BẤT BIẾN. Chống trùng bằng (device_id, serial_no).
+model AttendancePunch {
+  id         BigInt   @id @default(autoincrement())
+  deviceId   String   @map("device_id") @db.Uuid
+  serialNo   Int      @map("serial_no")
+  employeeNo String   @map("employee_no") @db.VarChar(50)
+  employeeId String?  @map("employee_id") @db.Uuid
+  punchTime  DateTime @map("punch_time") @db.Timestamptz(6)
+  campusId   String   @map("campus_id") @db.Uuid
+  verifyMode String?  @map("verify_mode") @db.VarChar(30)
+  eventMinor Int?     @map("event_minor")
+  personName String?  @map("person_name") @db.VarChar(200)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  device   AttendanceDevice @relation(fields: [deviceId], references: [id])
+  employee Employee?        @relation(fields: [employeeId], references: [id])
+
+  @@unique([deviceId, serialNo])
+  @@index([employeeId, punchTime])
+  @@index([punchTime], type: Brin)
+  @@index([employeeNo])
+  @@map("attendance_raw_punches")
+}
+
+/// Lịch làm việc / lịch trực: một nhân viên có thể có nhiều ca trong một ngày
+model Schedule {
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  date       DateTime @db.Date
+  shiftId    String   @map("shift_id") @db.Uuid
+  note       String?  @db.VarChar(300)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift    Shift    @relation(fields: [shiftId], references: [id])
+
+  @@unique([employeeId, date, shiftId])
+  @@index([date])
+  @@map("schedules")
+}
+
+// ===================== NGHỈ - CÔNG TÁC =====================
+
+model LeaveType {
+  id                 String   @id @default(uuid()) @db.Uuid
+  code               String   @unique @db.VarChar(20)
+  name               String   @db.VarChar(200)
+  /// Ký hiệu trên bảng công
+  symbol             String   @db.VarChar(10)
+  paid               Boolean  @default(true)
+  /// Ngày nghỉ vẫn được tính công (công tác, học tập…)
+  countsAsWork       Boolean  @default(false) @map("counts_as_work")
+  /// Trừ vào quỹ phép năm
+  deductAnnualLeave  Boolean  @default(false) @map("deduct_annual_leave")
+  requiresAttachment Boolean  @default(false) @map("requires_attachment")
+  workflowCode       String   @default("LEAVE_DEFAULT") @map("workflow_code") @db.VarChar(50)
+  maxDaysPerRequest  Int?     @map("max_days_per_request")
+  sortOrder          Int      @default(0) @map("sort_order")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?  @map("created_by") @db.Uuid
+  updatedBy          String?  @map("updated_by") @db.Uuid
+
+  requests LeaveRequest[]
+
+  @@map("leave_types")
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum HalfDay {
+  AM
+  PM
+}
+
+model LeaveRequest {
+  id                String      @id @default(uuid()) @db.Uuid
+  /// Số phiếu: NP-2026-000001
+  code              String      @unique @db.VarChar(30)
+  employeeId        String      @map("employee_id") @db.Uuid
+  leaveTypeId       String      @map("leave_type_id") @db.Uuid
+  fromDate          DateTime    @map("from_date") @db.Date
+  toDate            DateTime    @map("to_date") @db.Date
+  startSession      HalfDay     @default(AM) @map("start_session")
+  endSession        HalfDay     @default(PM) @map("end_session")
+  days              Decimal     @db.Decimal(5, 1)
+  reason            String      @db.VarChar(1000)
+  destination       String?     @db.VarChar(300)
+  fileId            String?     @map("file_id") @db.Uuid
+  status            LeaveStatus @default(PENDING)
+  approvalRequestId String?     @unique @map("approval_request_id") @db.Uuid
+  unitId            String      @map("unit_id") @db.Uuid
+  campusId          String      @map("campus_id") @db.Uuid
+  createdBy         String      @map("created_by") @db.Uuid
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  decidedAt         DateTime?   @map("decided_at") @db.Timestamptz(6)
+
+  employee  Employee  @relation(fields: [employeeId], references: [id])
+  leaveType LeaveType @relation(fields: [leaveTypeId], references: [id])
+
+  @@index([employeeId, fromDate])
+  @@index([status])
+  @@index([unitId, fromDate])
+  @@map("leave_requests")
+}
+
+/// Quỹ phép năm
+model LeaveBalance {
+  id              String   @id @default(uuid()) @db.Uuid
+  employeeId      String   @map("employee_id") @db.Uuid
+  year            Int
+  entitledDays    Decimal  @map("entitled_days") @db.Decimal(5, 1)
+  carriedOverDays Decimal  @default(0) @map("carried_over_days") @db.Decimal(5, 1)
+  adjustmentDays  Decimal  @default(0) @map("adjustment_days") @db.Decimal(5, 1)
+  note            String?  @db.VarChar(500)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?  @map("created_by") @db.Uuid
+  updatedBy       String?  @map("updated_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, year])
+  @@map("leave_balances")
+}
+
+// ===================== BẢNG CÔNG =====================
+
+enum TimesheetStatus {
+  PRESENT
+  ABSENT
+  LEAVE
+  LEAVE_HALF
+  HOLIDAY
+  MISSING_IN
+  MISSING_OUT
+  NO_SCHEDULE
+}
+
+/// Công ngày — tính lại được từ dữ liệu quét + lịch ca + phiếu nghỉ. Điều chỉnh thủ công lưu riêng (override_*).
+model DailyTimesheet {
+  id                String          @id @default(uuid()) @db.Uuid
+  employeeId        String          @map("employee_id") @db.Uuid
+  date              DateTime        @db.Date
+  /// id ca, hoặc "NONE" khi không xếp ca
+  slotKey           String          @map("slot_key") @db.VarChar(40)
+  shiftId           String?         @map("shift_id") @db.Uuid
+  unitId            String          @map("unit_id") @db.Uuid
+  /// Cơ sở thực tế (theo máy quét)
+  campusId          String?         @map("campus_id") @db.Uuid
+  /// Cơ sở phải làm (phân công / cơ sở gốc)
+  expectedCampusId  String          @map("expected_campus_id") @db.Uuid
+  status            TimesheetStatus
+  symbol            String          @db.VarChar(10)
+  workUnits         Decimal         @map("work_units") @db.Decimal(4, 2)
+  scheduledStart    DateTime?       @map("scheduled_start") @db.Timestamptz(6)
+  scheduledEnd      DateTime?       @map("scheduled_end") @db.Timestamptz(6)
+  firstIn           DateTime?       @map("first_in") @db.Timestamptz(6)
+  lastOut           DateTime?       @map("last_out") @db.Timestamptz(6)
+  workedMinutes     Int             @default(0) @map("worked_minutes")
+  lateMinutes       Int             @default(0) @map("late_minutes")
+  earlyMinutes      Int             @default(0) @map("early_minutes")
+  isLate            Boolean         @default(false) @map("is_late")
+  isEarly           Boolean         @default(false) @map("is_early")
+  campusMismatch    Boolean         @default(false) @map("campus_mismatch")
+  leaveRequestId    String?         @map("leave_request_id") @db.Uuid
+  overrideSymbol    String?         @map("override_symbol") @db.VarChar(10)
+  overrideWorkUnits Decimal?        @map("override_work_units") @db.Decimal(4, 2)
+  overrideReason    String?         @map("override_reason") @db.VarChar(500)
+  overriddenBy      String?         @map("overridden_by") @db.Uuid
+  overriddenAt      DateTime?       @map("overridden_at") @db.Timestamptz(6)
+  computedAt        DateTime        @default(now()) @map("computed_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift    Shift?   @relation(fields: [shiftId], references: [id])
+
+  @@unique([employeeId, date, slotKey])
+  @@index([unitId, date])
+  @@index([date])
+  @@map("daily_timesheets")
+}
+
+enum PeriodStatus {
+  OPEN
+  CONFIRMED
+  CLOSED
+}
+
+/// Kỳ công tháng của đơn vị: đơn vị xác nhận → TCCB chốt (khóa)
+model TimesheetPeriod {
+  id          String       @id @default(uuid()) @db.Uuid
+  unitId      String       @map("unit_id") @db.Uuid
+  month       String       @db.VarChar(7)
+  status      PeriodStatus @default(OPEN)
+  confirmedBy String?      @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime?    @map("confirmed_at") @db.Timestamptz(6)
+  closedBy    String?      @map("closed_by") @db.Uuid
+  closedAt    DateTime?    @map("closed_at") @db.Timestamptz(6)
+  note        String?      @db.VarChar(500)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  unit Unit @relation(fields: [unitId], references: [id])
+
+  @@unique([unitId, month])
+  @@map("timesheet_periods")
+}
+
+/// Ảnh chụp công tháng tại thời điểm chốt — đầu vào cho tính lương
+model MonthlyTimesheet {
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  month      String   @db.VarChar(7)
+  unitId     String   @map("unit_id") @db.Uuid
+  workUnits  Decimal  @map("work_units") @db.Decimal(6, 2)
+  dutyCount  Int      @default(0) @map("duty_count")
+  totals     Json
+  closedAt   DateTime @default(now()) @map("closed_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, month])
+  @@index([month, unitId])
+  @@map("monthly_timesheets")
+}
+
+// ===================== THÔNG BÁO =====================
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  title     String    @db.VarChar(300)
+  body      String?   @db.VarChar(1000)
+  link      String?   @db.VarChar(300)
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// ===================== TIỀN LƯƠNG =====================
+
+enum ComponentKind {
+  EARNING
+  DEDUCTION
+  EMPLOYER
+  INFO
+}
+
+/// Khoản lương — công thức là dữ liệu cấu hình (bộ tính an toàn packages/shared/src/payroll/formula.ts)
+model SalaryComponent {
+  id            String        @id @default(uuid()) @db.Uuid
+  code          String        @unique @db.VarChar(40)
+  name          String        @db.VarChar(200)
+  kind          ComponentKind
+  formula       String        @db.VarChar(2000)
+  taxable       Boolean       @default(false)
+  roundDigits   Int           @default(0) @map("round_digits")
+  sortOrder     Int           @default(0) @map("sort_order")
+  showOnPayslip Boolean       @default(true) @map("show_on_payslip")
+  description   String?       @db.VarChar(1000)
+  isActive      Boolean       @default(true) @map("is_active")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?       @map("created_by") @db.Uuid
+  updatedBy     String?       @map("updated_by") @db.Uuid
+
+  @@map("salary_components")
+}
+
+/// Thang lương (A1, A2.1, B…) — thời gian giữ bậc để nâng lương thường xuyên
+model SalaryScale {
+  id                  String            @id @default(uuid()) @db.Uuid
+  code                String            @unique @db.VarChar(20)
+  name                String            @db.VarChar(200)
+  raiseIntervalMonths Int               @map("raise_interval_months")
+  isActive            Boolean           @default(true) @map("is_active")
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  steps SalaryScaleStep[]
+
+  @@map("salary_scales")
+}
+
+model SalaryScaleStep {
+  id          String  @id @default(uuid()) @db.Uuid
+  scaleId     String  @map("scale_id") @db.Uuid
+  step        Int
+  coefficient Decimal @db.Decimal(6, 3)
+
+  scale SalaryScale @relation(fields: [scaleId], references: [id], onDelete: Cascade)
+
+  @@unique([scaleId, step])
+  @@map("salary_scale_steps")
+}
+
+/// Biểu thuế TNCN lũy tiến từng phần (tháng) theo ngày hiệu lực
+model PitBracketVersion {
+  id            String   @id @default(uuid()) @db.Uuid
+  effectiveFrom DateTime @unique @map("effective_from") @db.Date
+  /// [{ "upTo": "5000000" | null, "rate": "5" }, …]
+  brackets      Json
+  legalBasis    String?  @map("legal_basis") @db.VarChar(500)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?  @map("created_by") @db.Uuid
+
+  @@map("pit_bracket_versions")
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  CALCULATING
+  CALCULATED
+  CLOSED
+}
+
+/// Kỳ lương. Đã chốt → khóa; điều chỉnh sau đó đi qua truy lĩnh ở kỳ sau.
+model PayrollRun {
+  id            String           @id @default(uuid()) @db.Uuid
+  code          String           @unique @db.VarChar(30)
+  month         String           @db.VarChar(7)
+  name          String           @db.VarChar(200)
+  status        PayrollRunStatus @default(DRAFT)
+  note          String?          @db.VarChar(1000)
+  employeeCount Int              @default(0) @map("employee_count")
+  progress      Int              @default(0)
+  errorCount    Int              @default(0) @map("error_count")
+  totals        Json?
+  calculatedAt  DateTime?        @map("calculated_at") @db.Timestamptz(6)
+  closedAt      DateTime?        @map("closed_at") @db.Timestamptz(6)
+  closedBy      String?          @map("closed_by") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy     String?          @map("created_by") @db.Uuid
+
+  items PayrollItem[]
+
+  @@index([month])
+  @@map("payroll_runs")
+}
+
+/// Phiếu lương một nhân viên trong kỳ — lưu đủ biến đầu vào để giải trình
+model PayrollItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  runId           String   @map("run_id") @db.Uuid
+  employeeId      String   @map("employee_id") @db.Uuid
+  unitId          String   @map("unit_id") @db.Uuid
+  campusId        String   @map("campus_id") @db.Uuid
+  salaryForm      String?  @map("salary_form") @db.VarChar(20)
+  inputs          Json
+  /// Số công theo cơ sở thực tế { campusId: "units" } — phân bổ chi phí lương theo cơ sở
+  campusSplit     Json?    @map("campus_split")
+  gross           Decimal  @db.Decimal(18, 2)
+  taxable         Decimal  @db.Decimal(18, 2)
+  deductions      Decimal  @db.Decimal(18, 2)
+  employerCost    Decimal  @map("employer_cost") @db.Decimal(18, 2)
+  net             Decimal  @db.Decimal(18, 2)
+  errors          Json?
+  timesheetClosed Boolean  @default(false) @map("timesheet_closed")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  run      PayrollRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  employee Employee      @relation(fields: [employeeId], references: [id])
+  lines    PayrollLine[]
+
+  @@unique([runId, employeeId])
+  @@index([employeeId])
+  @@index([runId, unitId])
+  @@map("payroll_items")
+}
+
+model PayrollLine {
+  id        BigInt        @id @default(autoincrement())
+  itemId    String        @map("item_id") @db.Uuid
+  code      String        @db.VarChar(40)
+  name      String        @db.VarChar(200)
+  kind      ComponentKind
+  taxable   Boolean       @default(false)
+  amount    Decimal       @db.Decimal(24, 10)
+  sortOrder Int           @default(0) @map("sort_order")
+
+  item PayrollItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("payroll_lines")
+}
+
+enum RaiseKind {
+  REGULAR
+  EARLY
+  BEYOND_SCALE
+}
+
+enum RaiseStatus {
+  PROPOSED
+  APPROVED
+  REJECTED
+}
+
+/// Đề xuất / quyết định nâng lương
+model SalaryRaise {
+  id              String      @id @default(uuid()) @db.Uuid
+  employeeId      String      @map("employee_id") @db.Uuid
+  kind            RaiseKind
+  scaleCode       String?     @map("scale_code") @db.VarChar(20)
+  fromStep        Int?        @map("from_step")
+  toStep          Int?        @map("to_step")
+  fromCoefficient Decimal?    @map("from_coefficient") @db.Decimal(6, 3)
+  toCoefficient   Decimal?    @map("to_coefficient") @db.Decimal(6, 3)
+  fromBeyondPct   Decimal?    @map("from_beyond_pct") @db.Decimal(5, 2)
+  toBeyondPct     Decimal?    @map("to_beyond_pct") @db.Decimal(5, 2)
+  dueDate         DateTime    @map("due_date") @db.Date
+  effectiveDate   DateTime    @map("effective_date") @db.Date
+  status          RaiseStatus @default(PROPOSED)
+  reason          String?     @db.VarChar(1000)
+  decisionNo      String?     @map("decision_no") @db.VarChar(100)
+  decisionDate    DateTime?   @map("decision_date") @db.Date
+  resultSalaryId  String?     @map("result_salary_id") @db.Uuid
+  createdBy       String?     @map("created_by") @db.Uuid
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  decidedBy       String?     @map("decided_by") @db.Uuid
+  decidedAt       DateTime?   @map("decided_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([status, dueDate])
+  @@map("salary_raises")
+}
+
+enum RetroStatus {
+  PENDING
+  INCLUDED
+  CANCELLED
+}
+
+/// Truy lĩnh: chênh lệch các kỳ lương đã chốt khi quyết định lương/phụ cấp có hiệu lực hồi tố
+model RetroPay {
+  id            String      @id @default(uuid()) @db.Uuid
+  employeeId    String      @map("employee_id") @db.Uuid
+  reason        String      @db.VarChar(500)
+  fromMonth     String      @map("from_month") @db.VarChar(7)
+  toMonth       String      @map("to_month") @db.VarChar(7)
+  amount        Decimal     @db.Decimal(18, 2)
+  insAmount     Decimal     @default(0) @map("ins_amount") @db.Decimal(18, 2)
+  details       Json
+  status        RetroStatus @default(PENDING)
+  includedRunId String?     @map("included_run_id") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, status])
+  @@map("retro_pays")
+}
+
+enum ExtraIncomeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  PAID
+}
+
+/// Đề xuất thanh toán thu nhập tăng thêm do khoa lập → TCKT duyệt → chi trong kỳ lương
+model ExtraIncomeProposal {
+  id                String            @id @default(uuid()) @db.Uuid
+  code              String            @unique @db.VarChar(30)
+  unitId            String            @map("unit_id") @db.Uuid
+  month             String            @db.VarChar(7)
+  title             String            @db.VarChar(300)
+  note              String?           @db.VarChar(1000)
+  status            ExtraIncomeStatus @default(PENDING)
+  total             Decimal           @db.Decimal(18, 2)
+  approvalRequestId String?           @unique @map("approval_request_id") @db.Uuid
+  paidRunId         String?           @map("paid_run_id") @db.Uuid
+  createdBy         String            @map("created_by") @db.Uuid
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines ExtraIncomeLine[]
+
+  @@index([month, status])
+  @@index([unitId])
+  @@map("extra_income_proposals")
+}
+
+model ExtraIncomeLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  proposalId String  @map("proposal_id") @db.Uuid
+  employeeId String  @map("employee_id") @db.Uuid
+  amount     Decimal @db.Decimal(18, 2)
+  note       String? @db.VarChar(300)
+
+  proposal ExtraIncomeProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  employee Employee            @relation(fields: [employeeId], references: [id])
+
+  @@unique([proposalId, employeeId])
+  @@index([employeeId])
+  @@map("extra_income_lines")
+}

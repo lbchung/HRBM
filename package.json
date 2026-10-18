@@ -1,0 +1,34 @@
+{
+  "name": "bachmai-hrm",
+  "private": true,
+  "description": "Hệ thống Quản lý Nhân sự, Chấm công, Tiền lương — Bệnh viện Bạch Mai",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scarfSettings": {
+    "enabled": false
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "db:generate": "pnpm --filter @bachmai/db generate",
+    "db:migrate": "pnpm --filter @bachmai/db migrate",
+    "db:migrate:deploy": "pnpm --filter @bachmai/db migrate:deploy",
+    "db:seed": "pnpm --filter @bachmai/db seed",
+    "db:studio": "pnpm --filter @bachmai/db studio"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.37.0",
+    "eslint": "^9.37.0",
+    "globals": "^16.4.0",
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.8",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}
